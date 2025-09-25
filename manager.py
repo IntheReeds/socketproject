@@ -175,25 +175,28 @@ def main():
             print(f"[{timeStamp()}] [MANAGER] DEREG -> {reply}", flush=True)
             print(f"[{timeStamp()}] [MANAGER] current users: {state['users']}")
         elif msg.get("type") == "deregister-disk":
-            user_name = msg.get("disk_name")
+            disk_name = msg.get("disk_name")
 
-            if user_name not in state["disks"]:
-                reply = {
-                    "type": "deregister-disk-reply",
-                    "code": "FAILURE",
-                    "reason": f"disk '{disk_name}' not found"
-                }
-            else:
-                del state["disks"][disk_name]
-                reply = {
-                    "type": "deregister-user-reply",
-                    "code": "SUCCESS",
-                    "reason": ""
-                }
+            if not disk_name:
+                reply = {"type":"deregister-disk-reply","code":"FAILURE","reason":"missing disk_name"}
+                sock.sendto(json.dumps(reply).encode(), src)
+                print(f"[{timeStamp()}] [MANAGER] DEREG -> {reply}", flush=True)
+                continue
 
+            # check existence
+            if disk_name not in state["disks"]:
+                reply = {"type":"deregister-disk-reply","code":"FAILURE",
+                        "reason": f"disk '{disk_name}' not found"}
+                sock.sendto(json.dumps(reply).encode(), src)
+                print(f"[{timeStamp()}] [MANAGER] DEREG -> {reply}", flush=True)
+                continue
+
+
+            del state["disks"][disk_name]
+            reply = {"type":"deregister-disk-reply","code":"SUCCESS","reason":""}
             sock.sendto(json.dumps(reply).encode(), src)
             print(f"[{timeStamp()}] [MANAGER] DEREG -> {reply}", flush=True)
-            print(f"[{timeStamp()}] [MANAGER] current disks: {state['disks']}")
+            print(f"[{timeStamp()}] [MANAGER] current disks: {state['disks']}", flush=True)
         else:
             print(f"[{timeStamp()}] [MANAGER] Unknown type: {msg.get('type')}", flush=True)
 
