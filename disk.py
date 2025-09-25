@@ -48,7 +48,7 @@ def main():
             if len(parts) != 2:
                 print("Correct usage: deregister-disk <disk-name>")
                 continue
-            _, user_name = parts
+            _, disk_name = parts
             msg = {"type": "deregister-disk", "disk_name": disk_name}
             sock.sendto(json.dumps(msg).encode(), mgr)
             data, _ = sock.recvfrom(4096)
