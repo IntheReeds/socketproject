@@ -6,26 +6,31 @@ RECV_BYTES = 4096
 def timeStamp(): return time.strftime("%H:%M:%S")
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--bind", default="0.0.0.0")
+    """
+    Main loop for the manager.
+    Listens for UDP messages from users and disks, processes them, and maintains state.
+    """
+    ap = argparse.ArgumentParser() #Argument Parser 
+    ap.add_argument("--bind", default="0.0.0.0") 
     ap.add_argument("--port", type=int, required=True)
     args = ap.parse_args()
 
-    state = {
+    # Initial state
+    state = {                   
         "users": {},
         "disks": {},
         "dss": {} 
      }  
 
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((args.bind, args.port))
-    print(f"[{timeStamp()}] [MANAGER] listening on {args.bind}:{args.port}", flush=True)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) #UDP Socket
+    sock.bind((args.bind, args.port)) #Binding to address and port
+    print(f"[{timeStamp()}] [MANAGER] listening on {args.bind}:{args.port}", flush=True) 
 
     while True:
-        data, src = sock.recvfrom(RECV_BYTES)
+        data, src = sock.recvfrom(RECV_BYTES)   #Receive data from socket
         try:
-            msg = json.loads(data.decode("utf-8", "replace"))
+            msg = json.loads(data.decode("utf-8", "replace"))   #Decode JSON message
         except Exception:
             print(f"[{timeStamp()}] [MANAGER] Malformed JSON from {src}; ignoring", flush=True)
             continue
@@ -33,7 +38,7 @@ def main():
         print(f"[{timeStamp()}] [MANAGER] RECV {src} -> {msg}", flush=True)
 
         if msg.get("type") == "register-user":
-            #Message recieve
+            #Message received
             user_name = msg.get("user_name")
             if user_name in state["users"]:
                 reply = {"type": "register-user-reply", "code": "FAILURE",
@@ -45,20 +50,23 @@ def main():
                 continue
             m_port = msg.get("m_port")
             if any(u["m_port"] == m_port for u in state["users"].values()):
+                # Error if m_port already in use
                 reply = {"type": "register-user-reply", "code": "FAILURE",
                         "reason": f"m_port {m_port} already in use"}
-                reply_addr = (ip, m_port) if ip and m_port else src
-                sock.sendto(json.dumps(reply).encode(), reply_addr)
+                reply_addr = (ip, m_port) if ip and m_port else src 
+                sock.sendto(json.dumps(reply).encode(), reply_addr) 
                 print(f"[{timeStamp()}] [MANAGER] DUP M_PORT -> {reply}", flush=True)
                 continue
             c_port = msg.get("c_port")
             if any(u["c_port"] == c_port for u in state["users"].values()):
+                # Error if c_port already in use
                 reply = {"type": "register-user-reply", "code": "FAILURE",
                         "reason": f"c_port {c_port} already in use"}
                 reply_addr = (ip, m_port) if ip and m_port else src
                 sock.sendto(json.dumps(reply).encode(), reply_addr)
                 print(f"[{timeStamp()}] [MANAGER] DUP C_PORT -> {reply}", flush=True)
                 continue
+            # Record user information
             rec = {
                 "user_name": user_name,
                 "ipv4_addr": msg.get("ipv4_addr"),
@@ -141,6 +149,7 @@ def main():
             #elif su < 128 or su > 1024*1024 :
                 #reply = {"type": "configure-dss-reply", "code": "FAILURE", "reason": "invalid striping-unit"}
             else:
+                # find n free disks
                 free_disks = [d for d, rec in state["disks"].items() if rec["state"] == "Free"]
                 if len(free_disks) < n:
                     reply = {"type": "configure-dss-reply", "code": "FAILURE", "reason": "not enough free disks"}
@@ -154,7 +163,7 @@ def main():
                     reply = {"type": "configure-dss-reply", "code": "SUCCESS", "reason": ""}
 
             sock.sendto(json.dumps(reply).encode(), src)
-        elif msg.get("type") == "deregister-user":
+        elif msg.get("type") == "deregister-user":          #DEREGISTER USER
             user_name = msg.get("user_name")
 
             if user_name not in state["users"]:
@@ -174,7 +183,7 @@ def main():
             sock.sendto(json.dumps(reply).encode(), src)
             print(f"[{timeStamp()}] [MANAGER] DEREG -> {reply}", flush=True)
             print(f"[{timeStamp()}] [MANAGER] current users: {state['users']}")
-        elif msg.get("type") == "deregister-disk":
+        elif msg.get("type") == "deregister-disk":        #DEREGISTER DISK  
             disk_name = msg.get("disk_name")
 
             if not disk_name:

@@ -3,6 +3,7 @@ import argparse, socket, json, sys, time
 def timeStamp(): return time.strftime("%H:%M:%S")
 
 def main():
+    # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--manager-ip", default="127.0.0.1")
     parser.add_argument("--manager-port", type=int, default=5000)
@@ -13,6 +14,7 @@ def main():
 
     mgr = (args.manager_ip, args.manager_port)
 
+    # Create UDP socket and bind to m-port
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.my_ip, args.my_m_port))
 
@@ -21,18 +23,19 @@ def main():
 
 
     for line in sys.stdin:
-        if line.strip().startswith("register-disk"):
+        if line.strip().startswith("register-disk"):    #REGISTER DISK
             parts = line.strip().split()
             if len(parts) != 5:
                 print("Correct Usage: register-disk <name> <ip> <m-port> <c-port>")
                 continue
             _, disk_name, ip, m_port, c_port = parts
-            if not disk_name.isalpha() and len(disk_name) <= 15:
+            if not disk_name.isalpha() and len(disk_name) <= 15:    #check if disk name is valid
                 print("Error: disk_name must be alphabetic and at most 15 characters long")
                 continue
-            if ip != args.my_ip:
-                print("Erorr: IPV4 address must match with the peer process running ")
+            if ip != args.my_ip:    #check if ip matches
+                print("Error: IPV4 address must match with the peer process running ")
                 continue
+            # save info
             msg = {
                 "type": "register-disk",
                 "disk_name": disk_name,
@@ -43,9 +46,9 @@ def main():
             sock.sendto(json.dumps(msg).encode(), mgr)
             data, _ = sock.recvfrom(4096)
             print(f"[{timeStamp()}] [PEER] got reply {data.decode()}")
-        elif line.strip().startswith("deregister-disk"):
+        elif line.strip().startswith("deregister-disk"):    #DEREGISTER DISK
             parts = line.strip().split()
-            if len(parts) != 2:
+            if len(parts) != 2:                 #check if correct number of arguments
                 print("Correct usage: deregister-disk <disk-name>")
                 continue
             _, disk_name = parts
