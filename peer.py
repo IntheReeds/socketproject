@@ -107,6 +107,101 @@ def main():
                         print("  files: <none>")
                 
             #COPY
+        elif line.strip().startswith("copy-to "):
+            parts = line.strip().split()
+            if len(parts) != 5:
+                print("Correct usage: copy-to <dss-name> <file-name> <file-size> <owner>")
+                continue
+            _, target_dss, file_name, file_size, owner = parts
+            msg = {
+                "type": "copy",
+                "dss_name": target_dss,
+                "file_name": file_name,
+                "file_size": int(file_size),
+                "owner": owner
+            }
+            # drain stale
+            try:
+                mgr_sock.settimeout(0.0)
+                while True:
+                    try:
+                        _discard, _ = mgr_sock.recvfrom(65535)
+                    except (BlockingIOError, TimeoutError):
+                        break
+                    except Exception:
+                        break
+            finally:
+                mgr_sock.settimeout(None)
+
+            mgr_sock.sendto(json.dumps(msg).encode(), mgr)
+            print(f"[{timeStamp()}] [PEER] Sent copy-to request for {file_name} to {target_dss}")
+
+            # wait for copy-reply and then reuse the same flow as copy
+            mgr_sock.settimeout(3.0)
+            while True:
+                try:
+                    data, _ = mgr_sock.recvfrom(65535)
+                except socket.timeout:
+                    print(f"[{timeStamp()}] [PEER] Timeout waiting for copy-reply; retry command if needed")
+                    continue
+                reply = json.loads(data.decode())
+                if reply.get("type") == "copy-reply":
+                    break
+                else:
+                    print(f"[{timeStamp()}] [PEER] Ignoring unexpected reply type '{reply.get('type')}', waiting for copy-reply...")
+
+            if reply.get("code") == "FAILURE":
+                print(f"[{timeStamp()}] [PEER] Copy failed: {reply.get('reason')}")
+                continue
+            dss_name = reply.get("dss_name") or reply.get("dss-name") or reply.get("disk-array-name")
+            n = reply.get("n")
+            su = reply.get("stripping_unit") or reply.get("striping_unit") or reply.get("striping-unit")
+            disks = reply.get("disks", [])
+            if not (dss_name and n and su and disks):
+                print(f"[{timeStamp()}] [PEER] Missing params in copy-reply: {reply}")
+                continue
+
+            with open(file_name, "rb") as f:
+                file_data = f.read()
+            data_per_stripe = (n - 1) * su
+            num_stripes = math.ceil(len(file_data) / data_per_stripe)
+            for stripe_index in range(num_stripes):
+                start = stripe_index * data_per_stripe
+                end = start + data_per_stripe
+                stripe_data = file_data[start:end].ljust(data_per_stripe, b'\x00')
+                data_blocks = [stripe_data[i:i + su] for i in range(0, len(stripe_data), su)]
+                block_size = len(data_blocks[0])
+                parity = bytearray(block_size)
+                for i in range(block_size):
+                    acc = 0
+                    for block in data_blocks:
+                        acc ^= block[i]
+                    parity[i] = acc
+                parity_block = bytes(parity)
+                parity_disk_index = n - ((stripe_index % n) + 1)
+                threads = []
+                data_idx = 0
+                for i, disk in enumerate(disks):
+                    block_type = "PARITY" if i == parity_disk_index else "DATA"
+                    block_data = parity_block if block_type == "PARITY" else data_blocks[data_idx]
+                    if block_type == "DATA":
+                        data_idx += 1
+                    t = threading.Thread(target=send_block_to_disk, args=(file_name, disk, stripe_index, block_type, block_data))
+                    t.start(); threads.append(t)
+                for t in threads: t.join()
+            done_msg = {"type": "copy-complete", "file_size" : int(file_size), "file_name": file_name, "owner": owner, "dss_name": dss_name}
+            mgr_sock.sendto(json.dumps(done_msg).encode(), mgr)
+            while True:
+                try:
+                    data, _ = mgr_sock.recvfrom(65535)
+                except socket.timeout:
+                    print(f"[{timeStamp()}] [PEER] Waiting for copy-complete-reply...")
+                    continue
+                ack = json.loads(data.decode())
+                if ack.get("type") == "copy-complete-reply":
+                    print(f"[{timeStamp()}] [PEER] copy-complete -> {ack.get('code')}")
+                    break
+
         elif line.strip().startswith("copy"): 
             parts = line.strip().split()
             if len(parts) != 4:
@@ -119,25 +214,58 @@ def main():
                 "file_size": int(file_size),
                 "owner": owner
             }
+            # Drain any stale replies (e.g., ls-reply) before initiating copy
+            prev_timeout = None
+            try:
+                prev_timeout = mgr_sock.gettimeout()
+            except Exception:
+                prev_timeout = None
+            try:
+                mgr_sock.settimeout(0.0)
+                while True:
+                    try:
+                        _discard, _ = mgr_sock.recvfrom(65535)
+                    except (BlockingIOError, TimeoutError):
+                        break
+                    except Exception:
+                        break
+            finally:
+                # restore to blocking; we'll set a specific timeout below
+                mgr_sock.settimeout(None)
+
             mgr_sock.sendto(json.dumps(msg).encode(), mgr)
             print(f"[{timeStamp()}] [PEER] Sent copy request for {file_name}")
 
-            data, _ = mgr_sock.recvfrom(4096)
-            reply = json.loads(data.decode())
-            print(f"[{timeStamp()}] [PEER] Received reply: {json.dumps(reply)}")
+            # Receive until we get the expected copy-reply (discard stale acks)
+            mgr_sock.settimeout(3.0)
+            while True:
+                try:
+                    data, _ = mgr_sock.recvfrom(65535)
+                except socket.timeout:
+                    print(f"[{timeStamp()}] [PEER] Timeout waiting for copy-reply; retry command if needed")
+                    continue
+                reply = json.loads(data.decode())
+                rtype = reply.get("type")
+                print(f"[{timeStamp()}] [PEER] Received reply: {json.dumps(reply)}")
+                if rtype == "copy-reply":
+                    break
+                # Ignore unrelated/stale replies (e.g., copy-complete-reply from previous copy)
+                else:
+                    print(f"[{timeStamp()}] [PEER] Ignoring unexpected reply type '{rtype}', waiting for copy-reply...")
 
             if reply.get("code") == "FAILURE":
                 print(f"[{timeStamp()}] [PEER] Copy failed: {reply.get('reason')}")
                 continue
             
-            dss_name = reply["dss_name"]
-            n = reply["n"]
-            # Some managers use 'striping_unit' (single 'p'); support both
-            stripping_unit = reply.get("stripping_unit", reply.get("striping_unit"))
+            # Accept both underscored and hyphenated keys
+            dss_name = reply.get("dss_name") or reply.get("dss-name") or reply.get("disk-array-name")
+            n = reply.get("n")
+            # Support both striping_unit and stripping_unit, and hyphenated 'striping-unit'
+            stripping_unit = reply.get("stripping_unit") or reply.get("striping_unit") or reply.get("striping-unit")
             if stripping_unit is None:
                 print(f"[{timeStamp()}] [PEER] Copy failed: missing strip(p)ing_unit in reply")
                 continue
-            disks = reply["disks"]
+            disks = reply.get("disks", [])
     
             print(f"[{timeStamp()}] [PEER] Starting copy to DSS {dss_name} with {n} disks")
 
@@ -191,6 +319,22 @@ def main():
             done_msg = {"type": "copy-complete", "file_size" : int(file_size), "file_name": file_name, "owner": owner, "dss_name": dss_name}
             mgr_sock.sendto(json.dumps(done_msg).encode(), mgr)
 
+            # Drain and wait for the copy-complete-reply to clear manager lock
+            while True:
+                try:
+                    data, _ = mgr_sock.recvfrom(65535)
+                except socket.timeout:
+                    print(f"[{timeStamp()}] [PEER] Waiting for copy-complete-reply...")
+                    continue
+                ack = json.loads(data.decode())
+                atype = ack.get("type")
+                if atype == "copy-complete-reply":
+                    print(f"[{timeStamp()}] [PEER] copy-complete -> {ack.get('code')}")
+                    break
+                else:
+                    # Ignore any other traffic here
+                    print(f"[{timeStamp()}] [PEER] Ignoring '{atype}' while waiting for copy-complete-reply")
+
         elif line.strip().startswith("read "):
             parts = line.strip().split()
             if len(parts) != 4:
@@ -209,8 +353,8 @@ def main():
 
             file_content = bytearray()
             disks = reply["disks"]
-            n = reply["n"]
-            striping_unit = reply["striping_unit"]
+            n = reply.get("n")
+            striping_unit = reply.get("striping_unit") or reply.get("striping-unit") or reply.get("stripping_unit")
             file_size = reply["file_size"]
 
             # Calculate stripes same as copy phase
@@ -302,8 +446,8 @@ def main():
                 print(f"[{timeStamp()}] [PEER] disk-failure denied: {reply.get('reason')}")
                 continue
             # reply contains: n, striping_unit, disks (with ip+port), files
-            n = reply["n"]
-            su = reply.get("stripping_unit", reply.get("striping_unit"))
+            n = reply.get("n")
+            su = reply.get("stripping_unit") or reply.get("striping_unit") or reply.get("striping-unit")
             disks = reply["disks"]
             files = reply.get("files", [])
 

@@ -268,8 +268,18 @@ def main():
                 reply = {"type": "copy-reply",  "code": "FAILURE", "reason": "critical section in progress"}
                 sock.sendto(json.dumps(reply).encode(), src)
                 continue
-            # Select a DSS (first configured)
-            dss_name, dss_info = next(iter(state["dss"].items()))
+            # Select a DSS: honor requested if provided, else first configured
+            requested = msg.get("dss_name") or msg.get("dss-name") or msg.get("disk-array-name")
+            if requested:
+                if requested not in state["dss"]:
+                    reply = {"type": "copy-reply",  "code": "FAILURE", "reason": f"unknown DSS '{requested}'"}
+                    sock.sendto(json.dumps(reply).encode(), src)
+                    print(f"[{timeStamp()}] [MANAGER] COPY FAILURE (unknown DSS {requested})")
+                    continue
+                dss_name = requested
+                dss_info = state["dss"][dss_name]
+            else:
+                dss_name, dss_info = next(iter(state["dss"].items()))
             n = len(dss_info["disks"])
             su = dss_info["stripping_unit"]
             # Acquire lock for this copy
@@ -284,6 +294,10 @@ def main():
                     "ipv4_addr": disk_info["ipv4_addr"],
                     "c_port": disk_info["c_port"]
                 })
+            # Include spec-style keys for compatibility with assignment wording
+            reply["dss-name"] = dss_name
+            reply["disk-array-name"] = dss_name
+            reply["striping-unit"] = su
             sock.sendto(json.dumps(reply).encode(), src)
             print(f"[{timeStamp()}] [MANAGER] COPY PHASE1 -> {reply}")
 
