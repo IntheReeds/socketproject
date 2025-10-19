@@ -1,0 +1,17 @@
+diskA
+python3 disk.py --my-m-port 5102 --my-c-port 5202
+register-disk diskA 127.0.0.1 5102 5202
+
+diskB
+python3 disk.py --my-m-port 5103 --my-c-port 5203
+register-disk diskB 127.0.0.1 5103 5203
+
+diskC
+python3 disk.py --my-m-port 5104 --my-c-port 5204
+register-disk diskC 127.0.0.1 5104 5204
+
+diskE
+python3 disk.py --my-m-port 5106 --my-c-port 5206
+register-disk diskE 127.0.0.1 5106 5206
+
+configure-dss dssA 3 128
