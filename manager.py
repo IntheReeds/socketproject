@@ -17,11 +17,11 @@ def main():
 
     # Internal state
     state = {
-        "users": {},            # user_name -> { user_name, ipv4_addr, m_port, c_port, when }
-        "disks": {},            # disk_name -> { disk_name, ipv4_addr, m_port, c_port, state, when, dss_name? }
-        "dss": {},              # dss_name  -> { disks: [disk_name...], stripping_unit: int, files?: {file_name->{size,owner}} }
-        "_lock": None,          # critical section: { op: "copy"|"disk-failure"|"decommission", dss: str, user: str }
-        "_reads": {}            # dss_name -> set(user_names) for in-progress reads
+        "users": {},            
+        "disks": {},            
+        "dss": {},              
+        "_lock": None,          
+        "_reads": {}            
     }
 
 
@@ -39,7 +39,7 @@ def main():
 
         print(f"[{timeStamp()}] [MANAGER] RECV {src} -> {msg}", flush=True)
 
-        # Global critical section gate: when a two-phase op is active, only its completion message is allowed
+        # Critical section gate
         if state["_lock"] is not None:
             op = state["_lock"].get("op")
             dss_locked = state["_lock"].get("dss")
@@ -58,7 +58,7 @@ def main():
                 print(f"[{timeStamp()}] [MANAGER] REJECT (locked {op} on {dss_locked}) -> {reply}")
                 continue
 
-        # Dispatch by message type (inside while-loop)
+        # Dispatch by message type 
         msg_type = msg.get("type")
         if msg_type == "register-user":
             #Message received
@@ -268,7 +268,7 @@ def main():
                 reply = {"type": "copy-reply",  "code": "FAILURE", "reason": "critical section in progress"}
                 sock.sendto(json.dumps(reply).encode(), src)
                 continue
-            # Select a DSS: honor requested if provided, else first configured
+            # Select a DSS
             requested = msg.get("dss_name") or msg.get("dss-name") or msg.get("disk-array-name")
             if requested:
                 if requested not in state["dss"]:
@@ -282,10 +282,10 @@ def main():
                 dss_name, dss_info = next(iter(state["dss"].items()))
             n = len(dss_info["disks"])
             su = dss_info["stripping_unit"]
-            # Acquire lock for this copy
+            # lock for this copy
             owner = msg.get("owner", "")
             state["_lock"] = {"op": "copy", "dss": dss_name, "user": owner}
-            # Build reply with disk info
+            #  reply with disk info
             reply = {"type": "copy-reply", "code": "SUCCESS", "dss_name": dss_name, "n": n, "striping_unit": su, "disks": []}
             for disk_name in dss_info["disks"]:
                 disk_info = state["disks"][disk_name]
@@ -294,7 +294,7 @@ def main():
                     "ipv4_addr": disk_info["ipv4_addr"],
                     "c_port": disk_info["c_port"]
                 })
-            # Include spec-style keys for compatibility with assignment wording
+            # spec-style keys for compatibility with assignment wording
             reply["dss-name"] = dss_name
             reply["disk-array-name"] = dss_name
             reply["striping-unit"] = su
@@ -306,7 +306,7 @@ def main():
             owner = msg.get("owner")
             dss_name = msg.get("dss_name")
             file_size = int(msg.get("file_size", 0))
-            # Ensure lock matches
+            # check lock matches
             if not state["_lock"] or state["_lock"].get("op") != "copy" or state["_lock"].get("dss") != dss_name or state["_lock"].get("user") != owner:
                 reply = {"type": "copy-complete-reply", "code": "FAILURE", "reason": "no matching copy in progress"}
                 sock.sendto(json.dumps(reply).encode(), src)

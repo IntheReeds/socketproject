@@ -69,7 +69,7 @@ def listen_on_c_port(sock, storage):
             sock.sendto(json.dumps(reply).encode(), addr)
             print(f"[{timeStamp()}] [DISK] Sent read-block-reply for {file_name}, stripe {stripe_index}")
         elif msg_type == "fail":
-            # Simulate failure: wipe all stored blocks
+            # wipe all stored blocks
             wiped_files = list(storage.keys())
             storage.clear()
             reply = {"type": "fail-complete", "code": "SUCCESS", "wiped_files": wiped_files}
@@ -145,7 +145,6 @@ def main():
             for fname, blocks in storage.items():
                 print(f"  File: {fname}")
                 for blk in blocks:
-                    # Show a small safe preview of data (first 16 bytes in hex)
                     data_bytes = blk.get('data', b'')
                     preview = ' '.join(f"{b:02x}" for b in data_bytes[:16])
                     print(f"    Stripe {blk['stripe']} [{blk['block_type']}]: {blk['size']}B, Data preview: {preview}")

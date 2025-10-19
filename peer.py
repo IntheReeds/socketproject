@@ -214,7 +214,7 @@ def main():
                 "file_size": int(file_size),
                 "owner": owner
             }
-            # Drain any stale replies (e.g., ls-reply) before initiating copy
+            # drain any stale replies
             prev_timeout = None
             try:
                 prev_timeout = mgr_sock.gettimeout()
@@ -230,13 +230,13 @@ def main():
                     except Exception:
                         break
             finally:
-                # restore to blocking; we'll set a specific timeout below
+                # restore to blocking
                 mgr_sock.settimeout(None)
 
             mgr_sock.sendto(json.dumps(msg).encode(), mgr)
             print(f"[{timeStamp()}] [PEER] Sent copy request for {file_name}")
 
-            # Receive until we get the expected copy-reply (discard stale acks)
+
             mgr_sock.settimeout(3.0)
             while True:
                 try:
@@ -249,7 +249,6 @@ def main():
                 print(f"[{timeStamp()}] [PEER] Received reply: {json.dumps(reply)}")
                 if rtype == "copy-reply":
                     break
-                # Ignore unrelated/stale replies (e.g., copy-complete-reply from previous copy)
                 else:
                     print(f"[{timeStamp()}] [PEER] Ignoring unexpected reply type '{rtype}', waiting for copy-reply...")
 
@@ -257,10 +256,9 @@ def main():
                 print(f"[{timeStamp()}] [PEER] Copy failed: {reply.get('reason')}")
                 continue
             
-            # Accept both underscored and hyphenated keys
+            # accept both underscored and hyphenated keys
             dss_name = reply.get("dss_name") or reply.get("dss-name") or reply.get("disk-array-name")
             n = reply.get("n")
-            # Support both striping_unit and stripping_unit, and hyphenated 'striping-unit'
             stripping_unit = reply.get("stripping_unit") or reply.get("striping_unit") or reply.get("striping-unit")
             if stripping_unit is None:
                 print(f"[{timeStamp()}] [PEER] Copy failed: missing strip(p)ing_unit in reply")
@@ -279,10 +277,10 @@ def main():
                 end = start + data_per_stripe
                 stripe_data = file_data[start:end].ljust(data_per_stripe, b'\x00')
 
-                # Split stripe into data blocks
+                # Split 
                 data_blocks = [stripe_data[i:i + stripping_unit] for i in range(0, len(stripe_data), stripping_unit)]
 
-                # Create the parity block
+                # parity block
                 block_size = len(data_blocks[0])
                 parity = bytearray(block_size)
                 for i in range(block_size):
@@ -292,7 +290,6 @@ def main():
                     parity[i] = acc
                 parity_block = bytes(parity)
 
-                # Determine parity disk which should rotate per stripe
                 parity_disk_index = n - ((stripe_index % n) + 1)
                 parity_disk = disks[parity_disk_index]
 
@@ -319,7 +316,7 @@ def main():
             done_msg = {"type": "copy-complete", "file_size" : int(file_size), "file_name": file_name, "owner": owner, "dss_name": dss_name}
             mgr_sock.sendto(json.dumps(done_msg).encode(), mgr)
 
-            # Drain and wait for the copy-complete-reply to clear manager lock
+            # drain and wait for the copy-complete-reply to clear manager lock
             while True:
                 try:
                     data, _ = mgr_sock.recvfrom(65535)
@@ -332,7 +329,7 @@ def main():
                     print(f"[{timeStamp()}] [PEER] copy-complete -> {ack.get('code')}")
                     break
                 else:
-                    # Ignore any other traffic here
+                    # Ignore traffic
                     print(f"[{timeStamp()}] [PEER] Ignoring '{atype}' while waiting for copy-complete-reply")
 
         elif line.strip().startswith("read "):
@@ -357,7 +354,7 @@ def main():
             striping_unit = reply.get("striping_unit") or reply.get("striping-unit") or reply.get("stripping_unit")
             file_size = reply["file_size"]
 
-            # Calculate stripes same as copy phase
+            # Calculate stripes 
             stripe_size = (n - 1) * striping_unit
             total_stripes = (file_size + stripe_size - 1) // stripe_size
 
@@ -367,7 +364,6 @@ def main():
 
                 print(f"[{timeStamp()}] [PEER] Reading stripe {stripe_index} (parity on disk {disks[parity_disk_index]['disk_name']})")
 
-                # Request each block in this stripe
                 for disk_index, disk in enumerate(disks):
                     disk_ip = disk["ipv4_addr"]
                     disk_c_port = disk["c_port"]
@@ -410,12 +406,10 @@ def main():
                                 parity[j] ^= blk[j]
                     stripe_blocks[missing] = bytes(parity)
 
-                # --- Collect data blocks (skip parity) ---
                 for i, blk in enumerate(stripe_blocks):
                     if i != parity_disk_index and blk is not None:
                         file_content.extend(blk)
 
-            # Truncate padding
             file_content = file_content[:file_size]
             print(f"[{timeStamp()}] [PEER] Reconstructed file {file_name}, total {len(file_content)} bytes.")
 
@@ -445,13 +439,13 @@ def main():
             if reply.get("code") == "FAILURE":
                 print(f"[{timeStamp()}] [PEER] disk-failure denied: {reply.get('reason')}")
                 continue
-            # reply contains: n, striping_unit, disks (with ip+port), files
+            # reply 
             n = reply.get("n")
             su = reply.get("stripping_unit") or reply.get("striping_unit") or reply.get("striping-unit")
             disks = reply["disks"]
             files = reply.get("files", [])
 
-            # 1) Pick a random disk to fail
+            # random disk to fail
             import random
             failed_index = random.randrange(0, n)
             failed_disk = disks[failed_index]
@@ -472,8 +466,7 @@ def main():
                     print(f"[{timeStamp()}] [PEER] fail timeout from {failed_disk['disk_name']}")
                     continue
 
-            # 2) Reconstruct failed disk: for each file and stripe, XOR other blocks
-            # Helper to read a stripe block from a disk
+            # reconstruct failed disk
             def read_block(disk, file_name, stripe_index):
                 req = {"type": "read-block", "file_name": file_name, "stripe_index": stripe_index}
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s2:
@@ -488,7 +481,7 @@ def main():
                         pass
                 return None, None
 
-            # Helper to write block back to failed disk
+            # write block back to failed disk
             def write_block_to_failed(file_name, stripe_idx, block_type, data_bytes):
                 msg = {
                     "type": "write-block",
@@ -508,9 +501,9 @@ def main():
                 total_stripes = (fsize + (n-1)*su - 1) // ((n-1)*su)
                 print(f"[{timeStamp()}] [PEER] Reconstructing file {fname}: {total_stripes} stripes")
                 for stripe_idx in range(total_stripes):
-                    # Determine which disk is parity for this stripe (same rule as copy)
+                    # Determine which disk is parity
                     parity_disk_index = n - ((stripe_idx % n) + 1)
-                    # Read all other blocks in parallel
+                    # read all other blocks in parallel
                     results = [None]*n
                     threads = []
                     def read_one(di):
@@ -535,11 +528,11 @@ def main():
                         for j in range(min(block_size, len(bdata))):
                             xor_buf[j] ^= bdata[j]
 
-                    # Decide if reconstructed is DATA or PARITY
+ 
                     rec_type = "PARITY" if failed_index == parity_disk_index else "DATA"
                     write_block_to_failed(fname, stripe_idx, rec_type, bytes(xor_buf))
 
-            # 3) Notify manager recovery complete
+            # reply
             done = {"type": "recovery-complete", "dss_name": dss_name, "user_name": user_name}
             mgr_sock.sendto(json.dumps(done).encode(), mgr)
             data, _ = mgr_sock.recvfrom(4096)
@@ -565,12 +558,6 @@ def main():
             rc = json.loads(data.decode())
             print(f"[{timeStamp()}] [PEER] decommission-complete -> {rc.get('code')}")
 
-
-    
-            
-
-
-
 def send_block_to_disk(file_name, disk, stripe_index, block_type, data_block):
     
     disk_name = disk["disk_name"]
@@ -593,11 +580,6 @@ def send_block_to_disk(file_name, disk, stripe_index, block_type, data_block):
     sock.close()
 
     print(f"[{timeStamp()}] [PEER] Sent {block_type} block ({len(data_block)} bytes) to {disk_name}:{disk_c_port}")
-
-
-
-            
-            
 
 if __name__ == "__main__":
     main()
