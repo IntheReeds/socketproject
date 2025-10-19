@@ -373,9 +373,18 @@ def main():
                 {"file_name": fn, "file_size": meta.get("size", 0), "owner": meta.get("owner", "")}
                 for fn, meta in files_map.items()
             ]
+            # include full disk contact info
+            disks_detailed = []
+            for dn in dss_info["disks"]:
+                di = state["disks"].get(dn, {})
+                disks_detailed.append({
+                    "disk_name": dn,
+                    "ipv4_addr": di.get("ipv4_addr"),
+                    "c_port": di.get("c_port"),
+                })
             reply = {"type":"disk-failure-reply","code":"SUCCESS","dss_name": dss_name,
                      "n": len(dss_info["disks"]), "striping_unit": dss_info["stripping_unit"],
-                     "disks": dss_info["disks"], "files": files_list}
+                     "disks": disks_detailed, "files": files_list}
             sock.sendto(json.dumps(reply).encode(), src)
             print(f"[{timeStamp()}] [MANAGER] DISK-FAIL PHASE1 -> {reply}")
 

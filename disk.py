@@ -68,6 +68,13 @@ def listen_on_c_port(sock, storage):
 
             sock.sendto(json.dumps(reply).encode(), addr)
             print(f"[{timeStamp()}] [DISK] Sent read-block-reply for {file_name}, stripe {stripe_index}")
+        elif msg_type == "fail":
+            # Simulate failure: wipe all stored blocks
+            wiped_files = list(storage.keys())
+            storage.clear()
+            reply = {"type": "fail-complete", "code": "SUCCESS", "wiped_files": wiped_files}
+            sock.sendto(json.dumps(reply).encode(), addr)
+            print(f"[{timeStamp()}] [DISK] FAILURE simulated, wiped {len(wiped_files)} files")
         else:
             print(f"[{timeStamp()}] [DISK] Unknown msg type: {msg_type}", flush=True)
 

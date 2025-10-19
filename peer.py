@@ -301,7 +301,101 @@ def main():
             if reply.get("code") == "FAILURE":
                 print(f"[{timeStamp()}] [PEER] disk-failure denied: {reply.get('reason')}")
                 continue
-            # Normally peer would coordinate recovery here; we just complete it
+            # reply contains: n, striping_unit, disks (with ip+port), files
+            n = reply["n"]
+            su = reply.get("stripping_unit", reply.get("striping_unit"))
+            disks = reply["disks"]
+            files = reply.get("files", [])
+
+            # 1) Pick a random disk to fail
+            import random
+            failed_index = random.randrange(0, n)
+            failed_disk = disks[failed_index]
+            print(f"[{timeStamp()}] [PEER] Failing disk index {failed_index}: {failed_disk['disk_name']}")
+
+            # Send fail message
+            fail_msg = {"type": "fail"}
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(3)
+                s.sendto(json.dumps(fail_msg).encode(), (failed_disk["ipv4_addr"], int(failed_disk["c_port"])))
+                try:
+                    resp, _ = s.recvfrom(4096)
+                    rj = json.loads(resp.decode())
+                    if rj.get("type") != "fail-complete" or rj.get("code") != "SUCCESS":
+                        print(f"[{timeStamp()}] [PEER] fail not acknowledged: {rj}")
+                        continue
+                except socket.timeout:
+                    print(f"[{timeStamp()}] [PEER] fail timeout from {failed_disk['disk_name']}")
+                    continue
+
+            # 2) Reconstruct failed disk: for each file and stripe, XOR other blocks
+            # Helper to read a stripe block from a disk
+            def read_block(disk, file_name, stripe_index):
+                req = {"type": "read-block", "file_name": file_name, "stripe_index": stripe_index}
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s2:
+                    s2.settimeout(3)
+                    try:
+                        s2.sendto(json.dumps(req).encode(), (disk["ipv4_addr"], int(disk["c_port"])))
+                        data, _ = s2.recvfrom(1<<16)
+                        r = json.loads(data.decode())
+                        if r.get("code") == "SUCCESS":
+                            return r["block_type"], r["data"].encode("latin1")
+                    except socket.timeout:
+                        pass
+                return None, None
+
+            # Helper to write block back to failed disk
+            def write_block_to_failed(file_name, stripe_idx, block_type, data_bytes):
+                msg = {
+                    "type": "write-block",
+                    "file_name": file_name,
+                    "disk_name": failed_disk["disk_name"],
+                    "stripe_index": stripe_idx,
+                    "block_type": block_type,
+                    "block_size": len(data_bytes),
+                    "data": data_bytes.decode("latin1"),
+                }
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s3:
+                    s3.sendto(json.dumps(msg).encode(), (failed_disk["ipv4_addr"], int(failed_disk["c_port"])))
+
+            for fmeta in files:
+                fname = fmeta["file_name"]
+                fsize = int(fmeta["file_size"])
+                total_stripes = (fsize + (n-1)*su - 1) // ((n-1)*su)
+                print(f"[{timeStamp()}] [PEER] Reconstructing file {fname}: {total_stripes} stripes")
+                for stripe_idx in range(total_stripes):
+                    # Determine which disk is parity for this stripe (same rule as copy)
+                    parity_disk_index = n - ((stripe_idx % n) + 1)
+                    # Read all other blocks in parallel
+                    results = [None]*n
+                    threads = []
+                    def read_one(di):
+                        if di == failed_index:
+                            return
+                        btype, bdata = read_block(disks[di], fname, stripe_idx)
+                        results[di] = (btype, bdata)
+                    for di in range(n):
+                        if di == failed_index: continue
+                        t = threading.Thread(target=read_one, args=(di,))
+                        t.start(); threads.append(t)
+                    for t in threads: t.join()
+
+                    # XOR n-1 blocks
+                    block_size = su
+                    xor_buf = bytearray(block_size)
+                    for di, tup in enumerate(results):
+                        if di == failed_index or tup is None: continue
+                        _, bdata = tup
+                        if bdata is None:
+                            continue
+                        for j in range(min(block_size, len(bdata))):
+                            xor_buf[j] ^= bdata[j]
+
+                    # Decide if reconstructed is DATA or PARITY
+                    rec_type = "PARITY" if failed_index == parity_disk_index else "DATA"
+                    write_block_to_failed(fname, stripe_idx, rec_type, bytes(xor_buf))
+
+            # 3) Notify manager recovery complete
             done = {"type": "recovery-complete", "dss_name": dss_name, "user_name": user_name}
             mgr_sock.sendto(json.dumps(done).encode(), mgr)
             data, _ = mgr_sock.recvfrom(4096)
